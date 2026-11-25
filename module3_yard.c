@@ -1,5 +1,5 @@
 /*
- * yard.c - Module 3: Yard Bay Allocation & Constraint Checker
+ * module3_yard.c - Module 3: Yard Bay Allocation & Constraint Checker
  *
  * yard.dat holds exactly YARD_BAY_COUNT fixed-size records, bay N at offset
  * (N - 1) * sizeof(YardBay).
@@ -80,11 +80,11 @@ static int migrate_legacy_yard(void)
             return MFYD_ERR_IO;
 
         memset(&cur[i], 0, sizeof cur[i]);
-        cur[i].bay_id          = old[i].bay_id;
-        cur[i].is_hazmat_rated = old[i].is_hazardous_rated ? 1 : 0;
-        cur[i].max_weight_tons = old[i].max_weight_tons;
-        cur[i].occupied        = old[i].is_occupied ? 1 : 0;
-        cur[i].consignment_id  = cur[i].occupied ? old[i].consignment_id : -1;
+        cur[i].bay_id            = old[i].bay_id;
+        cur[i].is_hazmat_rated   = old[i].is_hazardous_rated ? 1 : 0;
+        cur[i].max_weight_tons   = old[i].max_weight_tons;
+        cur[i].occupied          = old[i].is_occupied ? 1 : 0;
+        cur[i].consignment_id    = cur[i].occupied ? old[i].consignment_id : -1;
         cur[i].current_load_tons = cur[i].occupied ? old[i].current_weight : 0.0f;
         if (cur[i].is_hazmat_rated)
             snprintf(cur[i].label, sizeof cur[i].label, "H%d", i + 1);
@@ -200,6 +200,9 @@ int allocate_best_fit_bay(int consignment_id, float weight, int is_hazardous)
     float w;
     int hazardous, best = -1, i, rc;
 
+    if (!(weight > 0.0f))
+        return MFYD_ERR_INVALID;
+
     rc = init_yard_layout_file();
     if (rc != MFYD_OK)
         return rc;
@@ -256,6 +259,8 @@ int allocate_best_fit_bay(int consignment_id, float weight, int is_hazardous)
 int vacate_yard_bay(int bay_id)
 {
     YardBay bays[YARD_BAY_COUNT];
+    YardBay prev;
+    Consignment c;
     char details[64];
     int released, rc;
 
@@ -268,13 +273,31 @@ int vacate_yard_bay(int bay_id)
     if (!bays[bay_id - 1].occupied)
         return MFYD_ERR_STATE;                  /* already free */
 
-    released = bays[bay_id - 1].consignment_id;
+    prev     = bays[bay_id - 1];
+    released = prev.consignment_id;
+
     bays[bay_id - 1].occupied          = 0;
     bays[bay_id - 1].consignment_id    = -1;
     bays[bay_id - 1].current_load_tons = 0.0f;
     rc = save_bay(&bays[bay_id - 1]);
     if (rc != MFYD_OK)
         return rc;
+
+    /*
+     * Keep consignment status in sync with yard occupancy:
+     * - Manual vacate while STAGED_IN_YARD -> revert to REGISTERED so the
+     *   consignment is not stuck in a phantom staged state.
+     * - Called during dispatch -> status is already DISPATCHED, leave untouched.
+     */
+    if (find_consignment_by_id(released, &c) == MFYD_OK &&
+        c.status == STATUS_STAGED_IN_YARD) {
+        c.status = STATUS_REGISTERED;
+        rc = save_consignment(&c);
+        if (rc != MFYD_OK) {                    /* roll back bay vacate */
+            save_bay(&prev);
+            return rc;
+        }
+    }
 
     snprintf(details, sizeof details, "released consignment #%d", released);
     log_audit_trail("VACATE", bay_id, details);
