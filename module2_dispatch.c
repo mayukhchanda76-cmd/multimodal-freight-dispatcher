@@ -60,7 +60,7 @@ int add_freight_route(FreightRoute *r)
 {
     FILE *fp;
     long size;
-    char details[96];
+    char details[256];
 
     if (r == NULL)
         return MFYD_ERR_INVALID;
